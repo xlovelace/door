@@ -35,31 +35,30 @@ class Door(object):
         self.port = port
         self.password = password
         self.sn = sn or self.get_sn()
+        self.reader = self.writer = None
 
-    def send(self, data):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            received_data = ''
-            s.connect((self.host, self.port))
-            s.sendall(data)
-            n = 1024
-            while True:
-                packet = s.recv(n)
-                packet = binascii.hexlify(packet).decode()
-                received_data += packet
-                # todo: 某些命令返回数据较大,会分多个包,会有多个7e...7e这样的格式,需要处理
-                if packet[-2:].lower() == '7e':
-                    break
-                # if len(packet) < n:
-                #     break
-        # res = binascii.hexlify(received_data).decode()
-        # print(res)
-        # return res
+    async def open_connection(self):
+        self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
+
+    async def send(self, data):
+        received_data = ''
+        self.writer.write(data)
+        await self.writer.drain()
+
+        n = 1024
+        while True:
+            packet = await self.reader.read(n)
+            packet = binascii.hexlify(packet).decode()
+            received_data += packet
+            # todo: 某些命令返回数据较大,会分多个包,会有多个7e...7e这样的格式,需要处理
+            if packet[-2:].lower() == '7e':
+                break
         return received_data
 
-    def send_command(self, command, data=''):
+    async def send_command(self, command, data=''):
         info_code = '19883d90'  # 信息码,可以是随机数
         data = self.compose_data(info_code, command.control_code, command.data_length, data)
-        res = self.send(data)
+        res = await self.send(data)
         res = self.parse_res(res)
         return res
 
@@ -71,6 +70,7 @@ class Door(object):
         data = self.compose_data(info_code, control_code, data_length)
         res = self.send(data)
         res = self.parse_res(res)
+        print(res)
         return res['data']
 
     def compose_data(self, info_code, control_code, data_length, data_content=''):
@@ -310,7 +310,7 @@ class Door(object):
         res = self.send_command(command)
         return res
 
-    def add_cards_to_unsorted_area(self, card_list):
+    async def add_cards_to_unsorted_area(self, card_list):
         '''
         添加授权卡至非排序区域
         '''
@@ -322,7 +322,7 @@ class Door(object):
             print(card.data)
             data += card.data
 
-        res = self.send_command(command, data=data)
+        res = await self.send_command(command, data=data)
         return res
 
     def clear_cards(self, area_code='03'):
@@ -370,42 +370,43 @@ class Door(object):
         return res
 
     # 实时监控相关命令
-    def get_monitor_status(self):
+    async def get_monitor_status(self):
         '''
         读取实时监控状态
         '''
         command = Command('010b02', '00000000')
-        res = self.send_command(command)
+        res = await self.send_command(command)
+        print(res)
         return res
 
-    def enable_monitor(self):
+    async def enable_monitor(self):
         '''
         开启监控
         '''
         command = Command('010b00', '00000000')
-        res = self.send_command(command)
+        res = await self.send_command(command)
         return res
 
-    def disable_monitor(self):
+    async def disable_monitor(self):
         '''
         关闭监控
         '''
         command = Command('010b01', '00000000')
-        res = self.send_command(command)
+        res = await self.send_command(command)
         return res
 
     # 实时监控
     async def monitor(self):
-        monitor_status = self.get_monitor_status()['data']
-        if monitor_status != '01':
-            self.enable_monitor()
-        # Register the open socket to wait for data.
-        reader, writer = await asyncio.open_connection(self.host, self.port)
         print('start monitor...{}--{}'.format(self.host, self.sn))
+        monitor_status = await self.get_monitor_status()
+        if monitor_status['data'] != '01':
+            await self.enable_monitor()
+        # Register the open socket to wait for data.
+        # reader, writer = await asyncio.open_connection(self.host, self.port)
 
         while True:
             # Wait for data
-            package = await reader.read(100)
+            package = await self.reader.read(100)
             res = binascii.hexlify(package).decode()
             try:
                 res = self.parse_res(res)
@@ -422,7 +423,8 @@ class Door(object):
                 pass
 
     # 同步卡
-    def sync_card(self):
+    async def sync_card(self):
+        print('start sync cards....')
         taidii_client = TaidiiApi(settings.TAIDII_USERNAME, settings.TAIDII_PASSWORD)
         cards_data = taidii_client.get_all_cards_from_taidii()
         if cards_data is None:
@@ -436,7 +438,7 @@ class Door(object):
                 if card not in upload_card_list:
                     upload_card_list.append(card)
 
-        res = self.add_cards_to_unsorted_area(upload_card_list)
+        res = await self.add_cards_to_unsorted_area(upload_card_list)
         # 添加成功返回ok代码,失败返回失败卡号(查看文档)
         control_code = res['category'] + res['command'] + res['parama']
         if control_code == self.OK_CODE:
@@ -462,6 +464,7 @@ class Door(object):
 
     # 同步读卡记录
     def sync_card_record(self):
+        print('start sync records....')
         taidii_client = TaidiiApi(settings.TAIDII_USERNAME, settings.TAIDII_PASSWORD)
         sql = "SELECT * FROM card_record WHERE is_upload=0"
         db.cur.execute(sql)
@@ -471,9 +474,11 @@ class Door(object):
             card_record_data['is_upload'] = is_success
             db.save_record(card_record_data)
 
-    def sync(self):
-        self.sync_card()
-        self.sync_card_record()
+    async def sync(self):
+        while True:
+            await self.sync_card()
+            self.sync_card_record()
+            await asyncio.sleep(60)
 
     def should_upload_record(self, data):
         info_type_dict = {
@@ -515,7 +520,7 @@ def search_device():
     host = '<broadcast>'
     devices = []
     devices_sn = []
-    while start < 10:
+    while start < 5:
         print('搜索局域网设备第{}次'.format(start + 1))
         data = '7E30303030303030303030303030303030FFFFFFFF19883D9001fe00000000021234b17E'
         data = binascii.unhexlify(data)
@@ -536,6 +541,12 @@ def search_device():
         except:
             pass
     return devices
+
+
+async def create_door(conifg):
+    door = Door(**conifg)
+    await door.open_connection()
+    return door
 
 
 def parse_search_res(res):
@@ -563,21 +574,30 @@ def parse_search_res(res):
     return device
 
 
-def main():
+async def main():
     devices = search_device()
     for device in devices:
         device_sn = device['sn']
         device_ip = str(device['ip'])
         print(device_ip, device_sn)
-        door = Door(host=device_ip, sn=device_sn)
-        asyncio.run(door.monitor())
+        config = {'host': device_ip, 'sn': device_sn}
+        door = await create_door(config)
+
+        task1 = asyncio.create_task(door.sync())
+        task2 = asyncio.create_task(door.monitor())
+        # asyncio.run(door.monitor())
+        await task1
+        await task2
 
 
 if __name__ == '__main__':
-    while True:
-        print('start monitoring...')
-        try:
-            main()
-        except:
-            print('restart monitoring...')
+    # while True:
+    #     print('start monitoring...')
+    #     try:
+    #         asyncio.run(main())
+    #         # main()
+    #     except Exception as e:
+    #         print(e)
+    #         print('restart monitoring...')
+    asyncio.run(main())
 
