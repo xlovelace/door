@@ -1,5 +1,4 @@
 import asyncio
-import concurrent.futures
 import binascii
 import ipaddress
 import socket
@@ -30,12 +29,14 @@ class Door(object):
     }
     OK_CODE = '210100'
 
+    reader = writer = None
+    cards_data = []
+
     def __init__(self, host='192.168.3.35', port=8000, password='FFFFFFFF', sn=None):
         self.host = host
         self.port = port
         self.password = password
         self.sn = sn or self.get_sn()
-        self.reader = self.writer = None
 
     async def open_connection(self):
         self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
@@ -70,7 +71,7 @@ class Door(object):
         data = self.compose_data(info_code, control_code, data_length)
         res = self.send(data)
         res = self.parse_res(res)
-        print(res)
+        # print(res)
         return res['data']
 
     def compose_data(self, info_code, control_code, data_length, data_content=''):
@@ -314,16 +315,17 @@ class Door(object):
         '''
         添加授权卡至非排序区域
         '''
+        info_code = '10000001'
         data_length = int('04', 16) + int('21', 16) * len(card_list)
         data_length = dec2hex(data_length).zfill(8)
         command = Command('070400', data_length)
         data = dec2hex(len(card_list)).zfill(8)
         for card in card_list:
-            print(card.data)
+            # print(card.data)
             data += card.data
 
-        res = await self.send_command(command, data=data)
-        return res
+        send_data = self.compose_data(info_code, command.control_code, command.data_length, data)
+        await self.send_data(send_data)
 
     def clear_cards(self, area_code='03'):
         '''
@@ -347,18 +349,20 @@ class Door(object):
         res = self.send_command(command, data)
         return res
 
-    def delete_cards(self, card_no_list):
+    async def delete_cards(self, card_no_list):
         '''
         删除授权卡
         '''
+        # print("delete cards: {}".format(card_no_list))
+        info_code = '10000005'
         data_length = dec2hex(int('04', 16) + int('5', 16) * len(card_no_list)).zfill(8)
         command = Command('070500', data_length)
         data = dec2hex(len(card_no_list)).zfill(8)
         for card_no in card_no_list:
             data += dec2hex(card_no).zfill(8)
 
-        res = self.send_command(command, data)
-        return res
+        send_data = self.compose_data(info_code, command.control_code, command.data_length, data)
+        await self.send_data(send_data)
 
     # 记录相关接口
     def get_record_point_info(self):
@@ -374,18 +378,19 @@ class Door(object):
         '''
         读取实时监控状态
         '''
+        info_code = '10000002'
         command = Command('010b02', '00000000')
-        res = await self.send_command(command)
-        print(res)
-        return res
+        send_data = self.compose_data(info_code, command.control_code, command.data_length, '')
+        await self.send_data(send_data)
 
     async def enable_monitor(self):
         '''
         开启监控
         '''
+        info_code = '10000003'
         command = Command('010b00', '00000000')
-        res = await self.send_command(command)
-        return res
+        send_data = self.compose_data(info_code, command.control_code, command.data_length, '')
+        await self.send_data(send_data)
 
     async def disable_monitor(self):
         '''
@@ -395,55 +400,48 @@ class Door(object):
         res = await self.send_command(command)
         return res
 
-    # 实时监控
+    # 读取数据
     async def monitor(self):
-        print('start monitor...{}--{}'.format(self.host, self.sn))
-        monitor_status = await self.get_monitor_status()
-        if monitor_status['data'] != '01':
-            await self.enable_monitor()
-        # Register the open socket to wait for data.
-        # reader, writer = await asyncio.open_connection(self.host, self.port)
-
+        print('start monitoring...')
+        count = 1
         while True:
-            # Wait for data
-            package = await self.reader.read(100)
+            package = await self.reader.read(1024)
             res = binascii.hexlify(package).decode()
-            try:
-                res = self.parse_res(res)
-                record_data = self.parse_card_record(res['data'])
-                res.update(record_data)
-                should_upload = self.should_upload_record(res)
-                if should_upload:
-                    taidii_client = TaidiiApi(settings.TAIDII_USERNAME, settings.TAIDII_PASSWORD)
-                    is_success = taidii_client.upload_record(res)
-                    res['is_upload'] = is_success
-                    db.save_record(res)
-                print(res)
-            except ValueError:
+            res = self.parse_res(res)
+            print('第{}次收到数据： {}'.format(count, res))
+            info_code = res['info_code']
+            if info_code == 'ffffffff':
+                self.handle_record(res)
+            elif info_code == '10000002':
+                await self.handle_monitor(res)
+            elif info_code == '10000001':
+                self.handle_card(res)
+            else:
                 pass
+            count += 1
 
-    # 同步卡
-    async def sync_card(self):
-        print('start sync cards....')
-        taidii_client = TaidiiApi(settings.TAIDII_USERNAME, settings.TAIDII_PASSWORD)
-        cards_data = taidii_client.get_all_cards_from_taidii()
-        if cards_data is None:
-            return
+    def handle_record(self, res):
+        record_data = self.parse_card_record(res['data'])
+        res.update(record_data)
+        should_upload = self.should_upload_record(res)
+        if should_upload:
+            taidii_client = TaidiiApi(settings.TAIDII_USERNAME, settings.TAIDII_PASSWORD)
+            is_success = taidii_client.upload_record(res)
+            res['is_upload'] = is_success
+            db.save_record(res)
+        # print(res)
 
-        cards_data_local = db.get_all_cards()
-        upload_card_list = []
-        for card_data in cards_data:
-            if self.should_upload_card(card_data, cards_data_local):
-                card = Card(card_no=card_data['card_no'])
-                if card not in upload_card_list:
-                    upload_card_list.append(card)
+    async def handle_monitor(self, res):
+        monitor_status = res['data']
+        if monitor_status != '01':  # 未开启
+            await self.enable_monitor()
 
-        res = await self.add_cards_to_unsorted_area(upload_card_list)
+    def handle_card(self, res):
         # 添加成功返回ok代码,失败返回失败卡号(查看文档)
         control_code = res['category'] + res['command'] + res['parama']
         if control_code == self.OK_CODE:
             is_success = True
-            for update_card_data in cards_data:
+            for update_card_data in self.cards_data:
                 update_card_data['is_upload'] = is_success
                 db.save_card(update_card_data)
         else:
@@ -454,7 +452,7 @@ class Door(object):
             for card in failed_card_data_list:
                 failed_cards.append(self.parse_card(card))
             failed_cards_no = [card['card_no'] for card in failed_cards]
-            for update_card_data in cards_data:
+            for update_card_data in self.cards_data:
                 if Card.validate_card_no(update_card_data['card_no']):
                     if update_card_data['card_no'] in failed_cards_no:
                         update_card_data['is_upload'] = False
@@ -462,9 +460,39 @@ class Door(object):
                         update_card_data['is_upload'] = True
                     db.save_card(update_card_data)
 
+
+    async def send_data(self, data):
+        self.writer.write(data)
+        await self.writer.drain()
+
+    # 同步卡
+    async def sync_card(self):
+        # print('start sync cards....')
+        taidii_client = TaidiiApi(settings.TAIDII_USERNAME, settings.TAIDII_PASSWORD)
+        cards_data = taidii_client.get_all_cards_from_taidii()
+        if cards_data is None:
+            return
+        self.cards_data = cards_data
+        # print("cards_data: {}".format(cards_data))
+
+        cards_data_local = db.get_all_cards()
+        upload_card_list = []
+        for card_data in cards_data:
+            if self.should_upload_card(card_data, cards_data_local):
+                card = Card(card_no=card_data['card_no'])
+                if card not in upload_card_list:
+                    upload_card_list.append(card)
+
+        delete_card_no_list = self.get_delete_cards(cards_data, cards_data_local)
+
+        await asyncio.sleep(10)
+        await self.delete_cards(delete_card_no_list)
+        await asyncio.sleep(30)
+        await self.add_cards_to_unsorted_area(upload_card_list)
+
     # 同步读卡记录
     def sync_card_record(self):
-        print('start sync records....')
+        # print('start sync records....')
         taidii_client = TaidiiApi(settings.TAIDII_USERNAME, settings.TAIDII_PASSWORD)
         sql = "SELECT * FROM card_record WHERE is_upload=0"
         db.cur.execute(sql)
@@ -472,13 +500,13 @@ class Door(object):
         for card_record_data in card_records_data:
             is_success = taidii_client.upload_record(card_record_data)
             card_record_data['is_upload'] = is_success
-            db.save_record(card_record_data)
+            db.update_record(card_record_data)
 
     async def sync(self):
         while True:
             await self.sync_card()
             self.sync_card_record()
-            await asyncio.sleep(60)
+            await asyncio.sleep(settings.CARD_SYNC_INTERNAL)
 
     def should_upload_record(self, data):
         info_type_dict = {
@@ -506,6 +534,24 @@ class Door(object):
             return True
         return False
 
+    def get_delete_cards(self, cards_data, cards_data_local):
+        # # print(cards_data)
+        # print(cards_data_local)
+        card_no_list = [card_data['card_no'] for card_data in cards_data if Card.validate_card_no(card_data['card_no'])]
+        local_card_no_list = [card_data['card_no'] for card_data in cards_data_local]
+        delete_card_no_list = []
+        for card_no in local_card_no_list:
+            if not Card.validate_card_no(card_no):
+                delete_sql = "DELETE FROM card WHERE card_no=?"
+                db.cur.execute(delete_sql, (card_no,))
+            if card_no not in card_no_list:
+                delete_sql = "DELETE FROM card WHERE card_no=?"
+                db.cur.execute(delete_sql, (card_no,))
+                delete_card_no_list.append(card_no)
+        db.conn.commit()
+
+        return delete_card_no_list
+
 
 def search_device():
     '''
@@ -521,7 +567,7 @@ def search_device():
     devices = []
     devices_sn = []
     while start < 5:
-        print('搜索局域网设备第{}次'.format(start + 1))
+        # print('搜索局域网设备第{}次'.format(start + 1))
         data = '7E30303030303030303030303030303030FFFFFFFF19883D9001fe00000000021234b17E'
         data = binascii.unhexlify(data)
         client.sendto(data, (host, settings.UDP_PORT))
@@ -530,10 +576,10 @@ def search_device():
         try:
             res, addr = client.recvfrom(1024)
             res = binascii.hexlify(res).decode()
-            print(res, addr)
+            # print(res, addr)
             device = parse_search_res(res)
             device_sn = device['sn']
-            print(device)
+            # print(device)
 
             if device_sn not in devices_sn:
                 devices_sn.append(device_sn)
@@ -579,25 +625,23 @@ async def main():
     for device in devices:
         device_sn = device['sn']
         device_ip = str(device['ip'])
-        print(device_ip, device_sn)
+        # print(device_ip, device_sn)
         config = {'host': device_ip, 'sn': device_sn}
         door = await create_door(config)
 
+        await door.get_monitor_status()
         task1 = asyncio.create_task(door.sync())
         task2 = asyncio.create_task(door.monitor())
-        # asyncio.run(door.monitor())
         await task1
         await task2
 
 
 if __name__ == '__main__':
-    # while True:
-    #     print('start monitoring...')
-    #     try:
-    #         asyncio.run(main())
-    #         # main()
-    #     except Exception as e:
-    #         print(e)
-    #         print('restart monitoring...')
-    asyncio.run(main())
-
+    while True:
+        print('start monitoring...')
+        try:
+            asyncio.run(main())
+        except Exception as e:
+            print(e)
+            print('restart monitoring...')
+    # asyncio.run(main())

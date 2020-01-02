@@ -2,6 +2,7 @@ import datetime
 
 import requests
 
+from card import Card
 from db import db
 from utils import str2datetime
 
@@ -45,7 +46,7 @@ class TaidiiApi(object):
         }
         card = db.get_one_card(data['card_no'])
         if card is None:
-            return False
+            return True
         device_no = f"{data['sn']}-{reader_dict[data['reader_no']]}"
         record_datetime = int(str2datetime(data['record_time'], format='%Y-%m-%d %H:%M:%S').timestamp()) * 1000
 
@@ -82,19 +83,26 @@ class TaidiiApi(object):
 
         cards_data = []
         for guardian in guardian_list:
+            if not self.validate_card(guardian):
+                continue
             card_data = {}
             card_data['people_id'] = guardian['student_id']
             card_data['people_type'] = 0
-            card_data['card_no'] = guardian['rfid']
+            card_data['card_no'] = str(int(guardian['rfid']))
             card_data['name'] = guardian['student_name']
             cards_data.append(card_data)
 
         for teacher in teacher_list:
+            if not self.validate_card(teacher):
+                continue
             card_data = {}
             card_data['people_id'] = teacher['teacher_id']
             card_data['people_type'] = 1
-            card_data['card_no'] = teacher['rfid']
+            card_data['card_no'] = str(int(teacher['rfid']))
             card_data['name'] = teacher['teacher_name']
             cards_data.append(card_data)
 
         return cards_data
+
+    def validate_card(self, card_data):
+        return Card.validate_card_no(card_data['rfid'])

@@ -17,10 +17,18 @@ def str_to_hex(s):
 
 
 def dec2bin(n):
+    try:
+        n = int(n)
+    except ValueError:
+        return ''
     return bin(n)[2:]
 
 
 def dec2hex(n):
+    try:
+        n = int(n)
+    except ValueError:
+        return ''
     return hex(n)[2:]
 
 
