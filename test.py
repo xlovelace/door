@@ -1,3 +1,5 @@
+import asyncio
+
 import settings
 from api import TaidiiApi
 from card import Card
@@ -85,7 +87,7 @@ def get_record_point_info():
 
 def monitor():
     door = Door()
-    door.monitor()
+    asyncio.run(door.monitor())
 
 
 def init_data():
@@ -139,17 +141,17 @@ if __name__ == '__main__':
     # add_cards_to_unsorted_area()
     # get_all_cards()
     # get_card_info()
-    clear_cards()
+    # clear_cards()
     # get_one_card()
     # get_record_point_info()
     # get_tcp_info()
     # set_tcp_info()
-    # monitor()
+    monitor()
     # init_data()
     # select_test()
     # monitor_test()
     # search()
     # get_checksum()
     # test_api()
-    test_sync()
+    # test_sync()
     # test_select_exists()

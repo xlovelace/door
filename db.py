@@ -52,6 +52,11 @@ class DB(object):
         self.conn.commit()
         self.close()
 
+    def update_record(self, data):
+        sql = "UPDATE card_record SET is_upload = ? WHERE id = ?"
+        self.cur.execute(sql, (data['is_upload'], data['id']))
+        self.conn.commit()
+
     def save_record(self, data):
         insert = "INSERT INTO card_record (card_no, record_time, reader_no, status, is_upload) VALUES (?, ?, ?, ?, ?)"
         self.cur.execute(insert,
