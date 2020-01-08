@@ -460,7 +460,6 @@ class Door(object):
                         update_card_data['is_upload'] = True
                     db.save_card(update_card_data)
 
-
     async def send_data(self, data):
         self.writer.write(data)
         await self.writer.drain()
@@ -567,7 +566,7 @@ def search_device():
     devices = []
     devices_sn = []
     while start < 5:
-        # print('搜索局域网设备第{}次'.format(start + 1))
+        print('搜索局域网设备第{}次'.format(start + 1))
         data = '7E30303030303030303030303030303030FFFFFFFF19883D9001fe00000000021234b17E'
         data = binascii.unhexlify(data)
         client.sendto(data, (host, settings.UDP_PORT))
@@ -576,10 +575,10 @@ def search_device():
         try:
             res, addr = client.recvfrom(1024)
             res = binascii.hexlify(res).decode()
-            # print(res, addr)
+            print(res, addr)
             device = parse_search_res(res)
             device_sn = device['sn']
-            # print(device)
+            print(device)
 
             if device_sn not in devices_sn:
                 devices_sn.append(device_sn)
