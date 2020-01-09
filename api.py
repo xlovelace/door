@@ -8,7 +8,7 @@ from utils import str2datetime
 
 
 class TaidiiApi(object):
-    taidii_base_url = 'http://dev.taidii.cn'
+    taidii_base_url = 'https://www.taidii.cn'
 
     def __init__(self, username, password):
         self.token = self.auth(username, password)
@@ -46,6 +46,7 @@ class TaidiiApi(object):
         }
         card = db.get_one_card(data['card_no'])
         if card is None:
+            print('no card')
             return True
         device_no = f"{data['sn']}-{reader_dict[data['reader_no']]}"
         record_datetime = int(str2datetime(data['record_time'], format='%Y-%m-%d %H:%M:%S').timestamp()) * 1000

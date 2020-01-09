@@ -315,17 +315,19 @@ class Door(object):
         '''
         添加授权卡至非排序区域
         '''
-        info_code = '10000001'
-        data_length = int('04', 16) + int('21', 16) * len(card_list)
-        data_length = dec2hex(data_length).zfill(8)
-        command = Command('070400', data_length)
-        data = dec2hex(len(card_list)).zfill(8)
+        print('start adding cards')
+        total = len(card_list)
+        print(total)
         for card in card_list:
-            # print(card.data)
+            info_code = '10000001'
+            data_length = int('04', 16) + int('21', 16)
+            data_length = dec2hex(data_length).zfill(8)
+            command = Command('070400', data_length)
+            data = dec2hex(1).zfill(8)
             data += card.data
 
-        send_data = self.compose_data(info_code, command.control_code, command.data_length, data)
-        await self.send_data(send_data)
+            send_data = self.compose_data(info_code, command.control_code, command.data_length, data)
+            await self.send_data(send_data)
 
     def clear_cards(self, area_code='03'):
         '''
@@ -424,12 +426,14 @@ class Door(object):
         record_data = self.parse_card_record(res['data'])
         res.update(record_data)
         should_upload = self.should_upload_record(res)
+        print(should_upload)
         if should_upload:
             taidii_client = TaidiiApi(settings.TAIDII_USERNAME, settings.TAIDII_PASSWORD)
             is_success = taidii_client.upload_record(res)
+            print(is_success)
             res['is_upload'] = is_success
             db.save_record(res)
-        # print(res)
+        print(res)
 
     async def handle_monitor(self, res):
         monitor_status = res['data']
@@ -453,6 +457,7 @@ class Door(object):
                 failed_cards.append(self.parse_card(card))
             failed_cards_no = [card['card_no'] for card in failed_cards]
             for update_card_data in self.cards_data:
+                print('update card {}'.format(update_card_data))
                 if Card.validate_card_no(update_card_data['card_no']):
                     if update_card_data['card_no'] in failed_cards_no:
                         update_card_data['is_upload'] = False
@@ -466,15 +471,15 @@ class Door(object):
 
     # 同步卡
     async def sync_card(self):
-        # print('start sync cards....')
+        print('start sync cards....')
         taidii_client = TaidiiApi(settings.TAIDII_USERNAME, settings.TAIDII_PASSWORD)
         cards_data = taidii_client.get_all_cards_from_taidii()
         if cards_data is None:
             return
         self.cards_data = cards_data
-        # print("cards_data: {}".format(cards_data))
 
         cards_data_local = db.get_all_cards()
+        print(cards_data_local)
         upload_card_list = []
         for card_data in cards_data:
             if self.should_upload_card(card_data, cards_data_local):
@@ -486,12 +491,13 @@ class Door(object):
 
         await asyncio.sleep(10)
         await self.delete_cards(delete_card_no_list)
-        await asyncio.sleep(30)
+        await asyncio.sleep(10)
         await self.add_cards_to_unsorted_area(upload_card_list)
+        await asyncio.sleep(10)
 
     # 同步读卡记录
     def sync_card_record(self):
-        # print('start sync records....')
+        print('start sync records....')
         taidii_client = TaidiiApi(settings.TAIDII_USERNAME, settings.TAIDII_PASSWORD)
         sql = "SELECT * FROM card_record WHERE is_upload=0"
         db.cur.execute(sql)
